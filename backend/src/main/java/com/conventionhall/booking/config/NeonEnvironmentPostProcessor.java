@@ -12,9 +12,9 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Loads .env.local (then .env) from the working directory and converts
- * Neon-style postgresql:// DATABASE_URL values into JDBC form so
- * Spring Boot datasource properties resolve correctly.
+ * Handles database URL conversion for both local dev (.env.local) and
+ * production (Render env vars). Converts postgresql:// → jdbc:postgresql://
+ * and extracts username/password from the URL if not set separately.
  */
 public class NeonEnvironmentPostProcessor implements EnvironmentPostProcessor {
 
@@ -23,30 +23,44 @@ public class NeonEnvironmentPostProcessor implements EnvironmentPostProcessor {
                                        SpringApplication application) {
         Map<String, Object> props = new HashMap<>();
 
-        // Load .env.local first, fall back to .env
+        // 1. Load dotenv files (local dev only — ignored if missing)
         loadDotenv(".env.local", props);
         loadDotenv(".env",       props);
 
-        // Convert DATABASE_URL → jdbc properties
-        String dbUrl = resolve("DATABASE_URL", props, environment);
-        if (dbUrl != null) {
+        // 2. For each key, prefer dotenv value, then fall back to system env
+        //    This means Render env vars work automatically when no dotenv file exists
+
+        // Convert DATABASE_URL (Neon postgresql:// format) → DB_JDBC_URL
+        String dbUrl = firstNonNull(props.get("DATABASE_URL"),
+                                    environment.getProperty("DATABASE_URL"));
+        if (dbUrl != null && !dbUrl.startsWith("jdbc:")) {
             Map<String, String> jdbc = toJdbc(dbUrl);
             if (jdbc != null) {
-                props.put("DB_JDBC_URL",  jdbc.get("url"));
-                if (!props.containsKey("DB_USERNAME") && jdbc.get("username") != null)
+                // Only set if not already explicitly provided
+                if (!hasValue(props, environment, "DB_JDBC_URL"))
+                    props.put("DB_JDBC_URL", jdbc.get("url"));
+                if (!hasValue(props, environment, "DB_USERNAME") && jdbc.get("username") != null)
                     props.put("DB_USERNAME", jdbc.get("username"));
-                if (!props.containsKey("DB_PASSWORD") && jdbc.get("password") != null)
+                if (!hasValue(props, environment, "DB_PASSWORD") && jdbc.get("password") != null)
                     props.put("DB_PASSWORD", jdbc.get("password"));
             }
         }
 
-        // Convert DATABASE_URL_UNPOOLED → Flyway direct URL
-        String dbUrlUnpooled = resolve("DATABASE_URL_UNPOOLED", props, environment);
-        if (dbUrlUnpooled != null) {
+        // Convert DATABASE_URL_UNPOOLED → DB_JDBC_URL_UNPOOLED
+        String dbUrlUnpooled = firstNonNull(props.get("DATABASE_URL_UNPOOLED"),
+                                            environment.getProperty("DATABASE_URL_UNPOOLED"));
+        if (dbUrlUnpooled != null && !dbUrlUnpooled.startsWith("jdbc:")) {
             Map<String, String> jdbc = toJdbc(dbUrlUnpooled);
-            if (jdbc != null) {
+            if (jdbc != null && !hasValue(props, environment, "DB_JDBC_URL_UNPOOLED"))
                 props.put("DB_JDBC_URL_UNPOOLED", jdbc.get("url"));
-            }
+        }
+
+        // Also handle DB_JDBC_URL if it was set directly in postgresql:// format
+        String directJdbcUrl = firstNonNull(props.get("DB_JDBC_URL"),
+                                            environment.getProperty("DB_JDBC_URL"));
+        if (directJdbcUrl != null && !directJdbcUrl.startsWith("jdbc:")) {
+            Map<String, String> jdbc = toJdbc(directJdbcUrl);
+            if (jdbc != null) props.put("DB_JDBC_URL", jdbc.get("url"));
         }
 
         if (!props.isEmpty()) {
@@ -55,7 +69,16 @@ public class NeonEnvironmentPostProcessor implements EnvironmentPostProcessor {
         }
     }
 
-    // ---- helpers ----
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    private boolean hasValue(Map<String, Object> props, ConfigurableEnvironment env, String key) {
+        return props.containsKey(key) || env.getProperty(key) != null;
+    }
+
+    private String firstNonNull(Object... values) {
+        for (Object v : values) if (v != null) return v.toString();
+        return null;
+    }
 
     private void loadDotenv(String filename, Map<String, Object> target) {
         try {
@@ -68,25 +91,11 @@ public class NeonEnvironmentPostProcessor implements EnvironmentPostProcessor {
                 if (!target.containsKey(e.getKey()))
                     target.put(e.getKey(), e.getValue());
             });
-        } catch (Exception ignored) {
-            // file not present — that's fine
-        }
+        } catch (Exception ignored) {}
     }
 
-    private String resolve(String key, Map<String, Object> props,
-                           ConfigurableEnvironment env) {
-        Object v = props.get(key);
-        if (v != null) return v.toString();
-        return env.getProperty(key);
-    }
-
-    /**
-     * Converts postgresql://user:pass@host/db?params
-     * to { url: "jdbc:postgresql://host/db?params", username, password }
-     */
     private Map<String, String> toJdbc(String url) {
         if (url == null || url.isBlank()) return null;
-        // Already JDBC format — nothing to do
         if (url.startsWith("jdbc:")) return Map.of("url", url);
         try {
             URI uri = URI.create(url);
@@ -97,8 +106,8 @@ public class NeonEnvironmentPostProcessor implements EnvironmentPostProcessor {
                 username = parts[0];
                 password = parts.length > 1 ? parts[1] : null;
             }
-            String query = uri.getRawQuery();
-            String jdbcUrl = "jdbc:postgresql://" + uri.getHost()
+            String query    = uri.getRawQuery();
+            String jdbcUrl  = "jdbc:postgresql://" + uri.getHost()
                 + (uri.getPort() > 0 ? ":" + uri.getPort() : "")
                 + uri.getPath()
                 + (query != null ? "?" + query : "");

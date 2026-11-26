@@ -8,5 +8,5 @@ RUN mvn package -DskipTests -q
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-Dserver.port=${PORT:-8080}", "-jar", "app.jar"]
+EXPOSE 10000
+CMD ["sh", "-c", "java -Dserver.port=${PORT:-10000} -jar app.jar"]
