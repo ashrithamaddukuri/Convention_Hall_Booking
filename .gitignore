@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+.env.local
+.env*.local
+backend/.env.local
+backend/.env
+
+# Build artifacts
+backend/target/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+
+# Neon link file (contains project config, not secret but not needed in repo)
+.neon
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
